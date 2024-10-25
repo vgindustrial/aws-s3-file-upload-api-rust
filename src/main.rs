@@ -133,18 +133,20 @@ async fn upload_image(
             .send()
             .await
             .map_err(|err| {
-                dbg!(err);
+                println!("Error occurred during image upload: {:?}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"err": "an error occured during image upload"})),
                 )
             })?;
         dbg!(_resp);
+        let url = format!("{}/{}", bucket_url, key);
+        println!("Uploaded file URL: {}", url);
         res.insert(
             // concatinating name and category so even if the filenames are same it will not
             // conflict
             format!("{}_{}", &name, &category),
-            format!("{}/{}", bucket_url, key),
+            url,
         );
     }
     // send the urls in response
