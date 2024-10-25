@@ -1,8 +1,5 @@
 use axum::{
-    extract::Multipart,
-    http::StatusCode,
-    routing::{get, post},
-    Extension, Json, Router,
+    async_trait, extract::{FromRequestParts, Multipart}, http::{request::Parts, StatusCode}, routing::{get, post}, Extension, Json, Router
 };
 use std::collections::HashMap;
 use tower_http::cors::CorsLayer;
@@ -14,7 +11,7 @@ use s3::Client;
 
 #[tokio::main]
 async fn main() {
-    // configuration for logging
+    // configuration for logging    
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "aws_image_upload=debug".into()),
@@ -38,20 +35,67 @@ async fn main() {
         .layer(cors_layer)
         // pass the aws s3 client to route handler
         .layer(Extension(aws_s3_client));
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-    tracing::debug!("starting server on port: {}", addr.port());
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
+    let addr = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+
+    axum::serve(addr, app)
         .await
-        .expect("failed to start server");
+        .expect("Failed to start server");
+
+}
+
+struct ApiKey(String);
+
+
+#[async_trait]
+impl<B> FromRequestParts<B> for ApiKey
+where
+    B: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<serde_json::Value>);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &B) -> Result<Self, Self::Rejection> {
+        // Extract the x-api-key header
+        let api_key_header = parts
+            .headers
+            .get("x-api-key")
+            .ok_or_else(|| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "API key is missing"})),
+                )
+            })?;
+
+        // Convert the header value to a string
+        let api_key_str = api_key_header
+            .to_str()
+            .map_err(|_| {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "Invalid API key format"})),
+                )
+            })?;
+
+        // Define the hardcoded API key
+        let expected_api_key = std::env::var("API_KEY").unwrap_or_else(|_| "api-key-vg-11".to_owned());
+
+        // Verify the API key
+        if api_key_str == expected_api_key {
+            Ok(ApiKey(api_key_str.to_string()))
+        } else {
+            Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "Unauthorized"})),
+            ))
+        }
+    }
 }
 
 // handler to upload image or file
 async fn upload_image(
+    ApiKey(_): ApiKey,
     Extension(s3_client): Extension<Client>,
     mut files: Multipart,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // get the name of aws bucket from env variable
     let bucket = std::env::var("AWS_S3_BUCKET").unwrap_or_else(|_| "my-bucket-name".to_owned());
     // if you have a public url for your bucket, place it as ENV variable BUCKET_URL
     let bucket_url = std::env::var("BUCKET_URL").unwrap_or_else(|_| bucket.to_owned());
